@@ -1,13 +1,27 @@
-# MaxPlay Telegram Admin Bot - Render
+# MaxPlay Telegram Admin Bot - Render (FIXED)
 # Handles Firebase + Telegram commands
-# Deploy on Render.com
+# Fixed event loop issue for Python 3.14
 
 import os
 import json
 import logging
+import asyncio
+import sys
 from datetime import datetime
-import firebase_admin
-from firebase_admin import credentials, db
+
+# ============ FIX EVENT LOOP BEFORE PYROGRAM IMPORT ============
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+else:
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    except Exception as e:
+        print(f"Event loop setup: {e}")
+
+# ============ IMPORT PYROGRAM AFTER EVENT LOOP ============
+
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
@@ -19,10 +33,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TelegramBot")
 
-# ============ CONFIG ============
+# ============ FIREBASE SETUP ============
 
-# Firebase Setup
 try:
+    import firebase_admin
+    from firebase_admin import credentials, db
+    
     firebase_credentials_json = os.getenv("FIREBASE_CREDENTIALS")
     if not firebase_credentials_json:
         raise ValueError("FIREBASE_CREDENTIALS not set in Render environment")
@@ -41,6 +57,8 @@ try:
 except Exception as e:
     logger.error(f"❌ Firebase init error: {e}")
     raise
+
+# ============ CONFIG ============
 
 # Admin IDs
 try:
@@ -64,7 +82,7 @@ except Exception as e:
     logger.error(f"❌ Bot token error: {e}")
     raise
 
-# Manager Space URL (for reference)
+# Manager Space URL
 MANAGER_URL = os.getenv("MANAGER_URL", "https://nawazkhan001-mw-hub-master.hf.space")
 
 logger.info(f"✅ Manager URL: {MANAGER_URL}")
@@ -75,8 +93,8 @@ logger.info(f"🤖 Bot mode: Pyrogram (on Render with full network access)")
 app = Client(
     "admin_bot",
     bot_token=BOT_TOKEN,
-    api_id=6,  # Dummy API ID for bot token
-    api_hash="eb06d64bfb670183"  # Dummy API hash for bot token
+    api_id=6,
+    api_hash="eb06d64bfb670183"
 )
 
 # ============ FIREBASE HELPERS ============
@@ -143,7 +161,6 @@ def save_video(video_id: str, file_id: str, file_name: str, file_size: int, uplo
 async def handle_commands(client: Client, message: Message):
     """Handle admin commands"""
     try:
-        # Check authorization
         if message.from_user.id not in ADMIN_IDS:
             logger.warning(f"⚠️  Unauthorized user: {message.from_user.id}")
             await message.reply("❌ Unauthorized access")
@@ -329,7 +346,6 @@ async def main():
         raise
 
 if __name__ == "__main__":
-    import asyncio
-    
     logger.info("Starting bot...")
     asyncio.run(main())
+            
