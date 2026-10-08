@@ -1,29 +1,15 @@
-# MaxPlay Telegram Admin Bot - Render (FIXED)
-# Handles Firebase + Telegram commands
-# Fixed event loop issue for Python 3.14
+# MaxPlay Telegram Admin Bot - Render
+# Using python-telegram-bot (HTTP API, not MTProto)
+# No time sync issues, much simpler
 
 import os
 import json
 import logging
-import asyncio
-import sys
 from datetime import datetime
-
-# ============ FIX EVENT LOOP BEFORE PYROGRAM IMPORT ============
-
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-else:
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    except Exception as e:
-        print(f"Event loop setup: {e}")
-
-# ============ IMPORT PYROGRAM AFTER EVENT LOOP ============
-
-from pyrogram import Client, filters
-from pyrogram.types import Message
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import firebase_admin
+from firebase_admin import credentials, db
 
 # ============ LOGGING ============
 
@@ -36,12 +22,9 @@ logger = logging.getLogger("TelegramBot")
 # ============ FIREBASE SETUP ============
 
 try:
-    import firebase_admin
-    from firebase_admin import credentials, db
-    
     firebase_credentials_json = os.getenv("FIREBASE_CREDENTIALS")
     if not firebase_credentials_json:
-        raise ValueError("FIREBASE_CREDENTIALS not set in Render environment")
+        raise ValueError("FIREBASE_CREDENTIALS not set")
     
     firebase_creds = json.loads(firebase_credentials_json)
     cred = credentials.Certificate(firebase_creds)
@@ -60,7 +43,6 @@ except Exception as e:
 
 # ============ CONFIG ============
 
-# Admin IDs
 try:
     admin_ids_str = os.getenv("ADMIN_IDS", "")
     if admin_ids_str:
@@ -72,7 +54,6 @@ except Exception as e:
     logger.error(f"❌ Admin IDs error: {e}")
     ADMIN_IDS = []
 
-# Bot token
 try:
     BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
     if not BOT_TOKEN:
@@ -82,20 +63,10 @@ except Exception as e:
     logger.error(f"❌ Bot token error: {e}")
     raise
 
-# Manager Space URL
 MANAGER_URL = os.getenv("MANAGER_URL", "https://nawazkhan001-mw-hub-master.hf.space")
 
 logger.info(f"✅ Manager URL: {MANAGER_URL}")
-logger.info(f"🤖 Bot mode: Pyrogram (on Render with full network access)")
-
-# ============ PYROGRAM CLIENT ============
-
-app = Client(
-    "admin_bot",
-    bot_token=BOT_TOKEN,
-    api_id=6,
-    api_hash="eb06d64bfb670183"
-)
+logger.info(f"🤖 Bot mode: python-telegram-bot (HTTP API, no MTProto)")
 
 # ============ FIREBASE HELPERS ============
 
@@ -157,123 +128,150 @@ def save_video(video_id: str, file_id: str, file_name: str, file_size: int, uplo
 
 # ============ COMMAND HANDLERS ============
 
-@app.on_message(filters.private & filters.command)
-async def handle_commands(client: Client, message: Message):
-    """Handle admin commands"""
-    try:
-        if message.from_user.id not in ADMIN_IDS:
-            logger.warning(f"⚠️  Unauthorized user: {message.from_user.id}")
-            await message.reply("❌ Unauthorized access")
-            return
-        
-        cmd = message.command[0]
-        logger.info(f"✅ Processing command: /{cmd} from user {message.from_user.id}")
-        
-        if cmd == "stats":
-            bots = get_active_bots()
-            videos = get_videos()
-            
-            text = f"📊 **System Statistics**\n\n"
-            text += f"🤖 Active Bots: {len(bots)}\n"
-            text += f"💾 Total Capacity: {len(bots) * 3}\n"
-            text += f"📹 Total Videos: {len(videos)}\n"
-            text += f"📊 Used Today: {sum([b.get('used_count', 0) for b in bots])}\n\n"
-            text += f"⏰ Updated: {datetime.now().strftime('%H:%M:%S')}"
-            
-            await message.reply(text)
-            logger.info(f"✅ Sent /stats response")
-        
-        elif cmd == "list_bots":
-            try:
-                bots_data = db.reference("bots").get() or {}
-            except:
-                bots_data = {}
-            
-            text = f"🤖 **Bot List** ({len(bots_data)} total)\n\n"
-            
-            if not bots_data:
-                text += "❌ No bots registered yet\n\n"
-                text += "Waiting for Space 1-2 workers to connect..."
-            else:
-                for bot_id, bot_data in list(bots_data.items())[:15]:
-                    if bot_data is None:
-                        continue
-                    status = "🟢" if bot_data.get("status") == "active" else "🔴"
-                    text += f"{status} {bot_id}\n"
-                    text += f"   Used: {bot_data.get('used_count', 0)}/{bot_data.get('capacity', 3)}\n"
-                    text += f"   Platform: {bot_data.get('platform')}\n"
-            
-            await message.reply(text)
-            logger.info(f"✅ Sent /list_bots response")
-        
-        elif cmd == "health":
-            bots = get_active_bots()
-            text = "🏥 **System Health**\n\n"
-            text += f"✅ Manager: Online\n"
-            text += f"✅ Firebase: Connected\n"
-            text += f"✅ Admin Bot: Running (Render)\n"
-            text += f"✅ Active Bots: {len(bots)}\n"
-            text += f"✅ API: Running\n\n"
-            text += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            
-            await message.reply(text)
-            logger.info(f"✅ Sent /health response")
-        
-        elif cmd == "videos":
-            videos = get_videos()
-            
-            text = f"📹 **Uploaded Videos** ({len(videos)})\n\n"
-            
-            if not videos:
-                text += "❌ No videos uploaded yet\n\n"
-                text += "Forward a video file to upload"
-            else:
-                for video_id, video_data in list(videos.items())[:10]:
-                    if video_data is None:
-                        continue
-                    title = video_data.get('title', 'Unknown')[:30]
-                    text += f"• {title}\n"
-                    text += f"  `{video_id}`\n"
-            
-            await message.reply(text)
-            logger.info(f"✅ Sent /videos response")
-        
-        else:
-            text = "📝 **Available Commands**\n\n"
-            text += "/stats - System statistics\n"
-            text += "/list_bots - List all bots\n"
-            text += "/health - System health\n"
-            text += "/videos - Uploaded videos\n\n"
-            text += "Or: Forward video file to upload"
-            
-            await message.reply(text)
-            logger.info(f"✅ Sent help message")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start command"""
+    user_id = update.effective_user.id
     
-    except Exception as e:
-        logger.error(f"❌ Command processing error: {e}")
-        await message.reply(f"❌ Error: {str(e)[:100]}")
+    if user_id not in ADMIN_IDS:
+        logger.warning(f"⚠️  Unauthorized user: {user_id}")
+        await update.message.reply_text("❌ Unauthorized access")
+        return
+    
+    await update.message.reply_text(
+        "👋 Welcome to MaxPlay Admin Bot\n\n"
+        "Available commands:\n"
+        "/stats - System statistics\n"
+        "/list_bots - List all bots\n"
+        "/health - System health\n"
+        "/videos - Uploaded videos\n\n"
+        "Or: Forward a video file to upload"
+    )
 
-# ============ DOCUMENT HANDLER (VIDEO UPLOAD) ============
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Stats command"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized")
+        return
+    
+    logger.info(f"✅ Processing /stats from user {user_id}")
+    
+    bots = get_active_bots()
+    videos = get_videos()
+    
+    text = f"📊 **System Statistics**\n\n"
+    text += f"🤖 Active Bots: {len(bots)}\n"
+    text += f"💾 Total Capacity: {len(bots) * 3}\n"
+    text += f"📹 Total Videos: {len(videos)}\n"
+    text += f"📊 Used Today: {sum([b.get('used_count', 0) for b in bots])}\n\n"
+    text += f"⏰ Updated: {datetime.now().strftime('%H:%M:%S')}"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+    logger.info(f"✅ Sent /stats response")
 
-@app.on_message(filters.private & filters.document)
-async def handle_video_upload(client: Client, message: Message):
-    """Handle video file upload"""
+async def list_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List bots command"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized")
+        return
+    
+    logger.info(f"✅ Processing /list_bots from user {user_id}")
+    
     try:
-        if message.from_user.id not in ADMIN_IDS:
-            logger.warning(f"⚠️  Unauthorized upload attempt from {message.from_user.id}")
-            await message.reply("❌ Unauthorized")
-            return
-        
-        file_id = message.document.file_id
-        file_name = message.document.file_name
-        file_size = message.document.file_size or 0
+        bots_data = db.reference("bots").get() or {}
+    except:
+        bots_data = {}
+    
+    text = f"🤖 **Bot List** ({len(bots_data)} total)\n\n"
+    
+    if not bots_data:
+        text += "❌ No bots registered yet\n\n"
+        text += "Waiting for Space 1-2 workers to connect..."
+    else:
+        for bot_id, bot_data in list(bots_data.items())[:15]:
+            if bot_data is None:
+                continue
+            status = "🟢" if bot_data.get("status") == "active" else "🔴"
+            text += f"{status} {bot_id}\n"
+            text += f"   Used: {bot_data.get('used_count', 0)}/{bot_data.get('capacity', 3)}\n"
+            text += f"   Platform: {bot_data.get('platform')}\n"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+    logger.info(f"✅ Sent /list_bots response")
+
+async def health(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Health command"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized")
+        return
+    
+    logger.info(f"✅ Processing /health from user {user_id}")
+    
+    bots = get_active_bots()
+    text = "🏥 **System Health**\n\n"
+    text += f"✅ Manager: Online\n"
+    text += f"✅ Firebase: Connected\n"
+    text += f"✅ Admin Bot: Running (Render)\n"
+    text += f"✅ Active Bots: {len(bots)}\n"
+    text += f"✅ API: Running\n\n"
+    text += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+    logger.info(f"✅ Sent /health response")
+
+async def videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Videos command"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized")
+        return
+    
+    logger.info(f"✅ Processing /videos from user {user_id}")
+    
+    videos_data = get_videos()
+    
+    text = f"📹 **Uploaded Videos** ({len(videos_data)})\n\n"
+    
+    if not videos_data:
+        text += "❌ No videos uploaded yet\n\n"
+        text += "Forward a video file to upload"
+    else:
+        for video_id, video_data in list(videos_data.items())[:10]:
+            if video_data is None:
+                continue
+            title = video_data.get('title', 'Unknown')[:30]
+            text += f"• {title}\n"
+            text += f"  `{video_id}`\n"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+    logger.info(f"✅ Sent /videos response")
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle document/video upload"""
+    user_id = update.effective_user.id
+    
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized")
+        return
+    
+    try:
+        document = update.message.document
+        file_id = document.file_id
+        file_name = document.file_name
+        file_size = document.file_size or 0
         
         logger.info(f"📹 Processing video upload: {file_name} ({file_size} bytes)")
         
         video_id = file_name.replace(" ", "_").replace(".mp4", "").replace(".mkv", "").replace(".avi", "").replace(".mov", "")
         
         # Save to Firebase
-        success = save_video(video_id, file_id, file_name, file_size, message.from_user.id)
+        success = save_video(video_id, file_id, file_name, file_size, user_id)
         
         if success:
             text = f"✅ **Video Saved**\n\n"
@@ -282,44 +280,39 @@ async def handle_video_upload(client: Client, message: Message):
             text += f"💾 Size: {file_size / (1024**3):.2f} GB\n\n"
             text += f"Ready for streaming!"
             
-            await message.reply(text)
+            await update.message.reply_text(text, parse_mode="Markdown")
             logger.info(f"✅ Video uploaded and saved: {video_id}")
         else:
-            await message.reply("❌ Failed to save video to database")
+            await update.message.reply_text("❌ Failed to save video to database")
             logger.error(f"❌ Failed to save video: {video_id}")
     
     except Exception as e:
         logger.error(f"❌ Document processing error: {e}")
-        await message.reply(f"❌ Upload error: {str(e)[:100]}")
+        await update.message.reply_text(f"❌ Upload error: {str(e)[:100]}")
 
-# ============ TEXT MESSAGE HANDLER ============
-
-@app.on_message(filters.private & filters.text)
-async def handle_text(client: Client, message: Message):
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages"""
-    try:
-        if message.from_user.id not in ADMIN_IDS:
-            await message.reply("❌ Unauthorized")
-            return
-        
-        logger.info(f"📨 Text message from {message.from_user.id}")
-        
-        await message.reply(
-            "📝 Use commands:\n\n"
-            "/stats - Statistics\n"
-            "/list_bots - List bots\n"
-            "/health - Health check\n"
-            "/videos - Videos\n\n"
-            "Or: Forward a video file to upload"
-        )
+    user_id = update.effective_user.id
     
-    except Exception as e:
-        logger.error(f"❌ Text handler error: {e}")
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("❌ Unauthorized")
+        return
+    
+    logger.info(f"📨 Text message from {user_id}")
+    
+    await update.message.reply_text(
+        "📝 Use commands:\n\n"
+        "/stats - Statistics\n"
+        "/list_bots - List bots\n"
+        "/health - Health check\n"
+        "/videos - Videos\n\n"
+        "Or: Forward a video file to upload"
+    )
 
-# ============ STARTUP & RUN ============
+# ============ MAIN ============
 
 async def main():
-    """Main function"""
+    """Start the bot"""
     try:
         logger.info("=" * 60)
         logger.info("🚀 Telegram Admin Bot STARTING on Render")
@@ -337,15 +330,31 @@ async def main():
         logger.info("   Forward file - Upload video")
         logger.info("=" * 60)
         
-        async with app:
-            logger.info("✅ Bot polling started...")
-            await app.idle()
+        # Create application
+        application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Add handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("stats", stats))
+        application.add_handler(CommandHandler("list_bots", list_bots))
+        application.add_handler(CommandHandler("health", health))
+        application.add_handler(CommandHandler("videos", videos))
+        application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+        
+        logger.info("✅ Bot handlers registered")
+        logger.info("✅ Bot polling started...")
+        
+        # Start polling
+        await application.run_polling()
     
     except Exception as e:
         logger.error(f"❌ Bot error: {e}")
         raise
 
 if __name__ == "__main__":
+    import asyncio
+    
     logger.info("Starting bot...")
     asyncio.run(main())
-            
+    
