@@ -1,3 +1,2 @@
-pyrogram==1.4.16
-tgcrypto==1.2.5
+python-telegram-bot==20.7
 firebase-admin==6.2.0
